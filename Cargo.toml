@@ -1,0 +1,13 @@
+[package]
+name = "postgres-lo"
+version = "0.1.0"
+authors = ["Nicholas Sim <nsim@posteo.net>"]
+edition = "2021"
+description = "Async support for Postgres large objects"
+readme = "README.md"
+repository = "https://github.com/nw0/rust-pg-large-object"
+license = "MIT"
+keywords = ["async", "database", "postgres", "postgresql", "sql"]
+
+[dependencies]
+tokio-postgres = { version = "0.7", default-features = false }

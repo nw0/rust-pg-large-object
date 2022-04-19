@@ -10,4 +10,9 @@ license = "MIT"
 keywords = ["async", "database", "postgres", "postgresql", "sql"]
 
 [dependencies]
+futures = "0.3"
+pin-project = "1.0"
+postgres-types = { version = "0.2" }
+tokio = { version = "1", default-features = false }
 tokio-postgres = { version = "0.7", default-features = false }
+

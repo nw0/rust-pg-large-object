@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 use futures::ready;
 use pin_project::pin_project;
 use postgres_types::Oid;
-use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
+use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf};
 use tokio_postgres::{Error, Row, Transaction};
 
 /// Default chunk size for reading/writing large object.
@@ -30,6 +30,13 @@ async fn loread(client: &Transaction<'_>, fd: i32, size: usize) -> Result<Row, E
         .await
 }
 
+async fn lowrite(client: &Transaction<'_>, fd: i32, buf: Vec<u8>) -> Result<usize, Error> {
+    let size = cmp::min(buf.len(), DEFAULT_OP_SZ) as i32;
+    client
+        .query_one("SELECT pg_catalog.lowrite($1, $2)", &[&fd, &size])
+        .await
+        .map(|row| row.get::<_, i32>(0) as usize)
+}
 
 async fn lseek64(client: &Transaction<'_>, fd: i32, whence: SeekFrom) -> Result<u64, Error> {
     let (offset, whence) = match whence {
@@ -50,6 +57,7 @@ async fn lseek64(client: &Transaction<'_>, fd: i32, whence: SeekFrom) -> Result<
 enum LoState<'pin> {
     Seek(Pin<Box<dyn Future<Output = Result<u64, Error>> + 'pin>>),
     Read(Pin<Box<dyn Future<Output = Result<Row, tokio_postgres::Error>> + 'pin>>),
+    Write(Pin<Box<dyn Future<Output = Result<usize, Error>> + 'pin>>),
     Wait,
 }
 
@@ -161,5 +169,41 @@ impl<'a> AsyncRead for LargeObject<'a> {
             }
             _ => todo!(),
         }
+    }
+}
+
+impl<'a> AsyncWrite for LargeObject<'a> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let mut this = self.project();
+        let state = this.state.as_mut().project();
+        match state {
+            LoStateEn::Wait => {
+                let buf: Vec<u8> = buf.into();
+                let op = lowrite(*this.client, *this.fd, buf);
+                this.state.project_replace(LoState::Write(Box::pin(op)));
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            LoStateEn::Write(fut) => {
+                // Do we assume that this buf is the same as the last one?
+                let result = ready!(fut.as_mut().poll(cx));
+                this.state.project_replace(LoState::Wait);
+                Poll::Ready(result.map_err(|_| todo!()))
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        // No need to flush
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
